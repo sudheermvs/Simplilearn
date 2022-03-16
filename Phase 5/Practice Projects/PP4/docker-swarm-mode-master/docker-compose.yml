@@ -1,0 +1,261 @@
+version: "3.7"
+
+services:
+
+    swarm-listener:
+        image: dockerflow/docker-flow-swarm-listener:latest
+        hostname: swarm-listener
+        networks:
+            - proxy
+        volumes:
+            - "/var/run/docker.sock:/var/run/docker.sock"
+        environment:
+            - DF_NOTIFY_CREATE_SERVICE_URL=http://proxy:8080/v1/docker-flow-proxy/reconfigure
+            - DF_NOTIFY_REMOVE_SERVICE_URL=http://proxy:8080/v1/docker-flow-proxy/remove
+        deploy:
+            placement:
+                constraints: [node.role == manager]
+
+    proxy:
+        image: dockerflow/docker-flow-proxy:latest
+        hostname: proxy
+        ports:
+            - "80:80"
+            - "443:443"
+            - "5000:5000"
+            - "10022:10022"
+        networks:
+            - proxy
+        environment:
+            - LISTENER_ADDRESS=swarm-listener
+            - MODE=swarm
+            - BIND_PORTS=5000
+        secrets:
+            - cert-xip.io.pem
+
+    # See this blog on how to set up docker registry (ports 8082 and 5000 are for docker proxy and hosted repos): https://blog.sonatype.com/using-nexus-3-as-your-repository-part-3-docker-images
+    nexus:
+        image: sonatype/nexus3:latest
+        hostname: nexus
+        user: root
+        environment:
+            - NEXUS_CONTEXT=nexus
+        networks:
+            - proxy
+            - attachable
+        volumes:
+            - nexus_data:/nexus-data
+        deploy:
+            labels:
+                - com.df.notify=true
+                - com.df.distribute=true
+                - com.df.servicePath.1=/nexus
+                - com.df.port.1=8081
+                - com.df.srcPort.1=443
+                - com.df.servicePath.2=/
+                - com.df.port.2=8082 # reserved for docker group repo
+                - com.df.srcPort.2=443
+                - com.df.servicePath.3=/
+                - com.df.port.3=5000 # reserved for docker hosted repo
+                - com.df.srcPort.3=5000
+
+    sonarDB:
+        image: postgres:latest
+        hostname: sonarDB
+        environment:
+            - POSTGRES_USER=sonar
+            - POSTGRES_PASSWORD=sonar
+        networks:
+            - sonarqube
+        volumes:
+            - postgresql:/var/lib/postgresql
+            - postgresql_data:/var/lib/postgresql/data
+
+    sonarqube:
+        image: sonarqube:latest
+        hostname: sonarqube
+        environment:
+            - SONARQUBE_JDBC_URL=jdbc:postgresql://sonarDB:5432/sonar
+            - SONARQUBE_JDBC_USERNAME=sonar
+            - SONARQUBE_JDBC_PASSWORD=sonar
+        networks:
+            - sonarqube
+            - proxy
+            - attachable
+        volumes:
+            - sonarqube_conf:/opt/sonarqube/conf
+            - sonarqube_data:/opt/sonarqube/data
+            - sonarqube_extensions:/opt/sonarqube/extensions
+            - sonarqube_bundled_plugins:/opt/sonarqube/lib/bundled-plugins
+        command: ["-Dsonar.web.context=/sonar"]
+        deploy:
+            labels:
+                - com.df.notify=true
+                - com.df.distribute=true
+                - com.df.servicePath=/sonar
+                - com.df.port=9000
+                - com.df.srcPort=443
+
+    jenkins:
+        image: shazchaudhry/docker-jenkins:latest
+        user: root
+        hostname: jenkins
+        environment:
+            - JENKINS_OPTS='--prefix=/jenkins'
+        networks:
+            - proxy
+            - attachable
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+            - jenkins_home:/var/jenkins_home
+            - $PWD/maven:/maven
+        secrets: # See how secrets are used in this jenkins image at: https://github.com/shazChaudhry/docker-jenkins/blob/master/config/security.groovy
+            - jenkins-user
+            - jenkins-pass
+#        logging:
+#            driver: gelf
+#            options:
+#                gelf-address: udp://127.0.0.1:12201
+        deploy:
+            placement:
+                constraints: [node.role == manager]
+            labels:
+                - com.df.notify=true
+                - com.df.distribute=true
+                - com.df.servicePath=/jenkins
+                - com.df.port=8080
+                - com.df.srcPort=443
+
+    redis:
+        image: sameersbn/redis:latest
+        hostname: redis
+        networks:
+            - gitlab
+        volumes:
+            - redis_data:/var/lib/redis
+        command: ["--loglevel warning"]
+
+    gitlabDB:
+        image: sameersbn/postgresql:latest
+        hostname: gitlabDB
+        networks:
+            - gitlab
+        volumes:
+            - gitlabPostgresql_data:/var/lib/postgresql
+        environment:
+            - DB_USER=gitlab
+            - DB_PASS=password
+            - DB_NAME=gitlabhq_production
+            - DB_EXTENSION=pg_trgm
+
+    gitlab:
+        image: sameersbn/gitlab:latest
+        hostname: gitlab
+        networks:
+            - gitlab
+            - proxy
+        volumes:
+            - gitlab_data:/home/git/data
+        environment:
+           - DEBUG=false
+           - DB_ADAPTER=postgresql
+           - DB_HOST=gitlabDB
+           - DB_PORT=5432
+           - DB_USER=gitlab
+           - DB_PASS=password
+           - DB_NAME=gitlabhq_production
+
+           - REDIS_HOST=redis
+           - REDIS_PORT=6379
+
+           - GITLAB_HTTPS=true
+           - SSL_SELF_SIGNED=true
+
+           - GITLAB_HOST=node1
+           - GITLAB_PORT=443
+           - GITLAB_SSH_PORT=10022
+           - GITLAB_RELATIVE_URL_ROOT=/gitlab
+           - GITLAB_SECRETS_DB_KEY_BASE=long-and-random-alphanumeric-string
+           - GITLAB_SECRETS_SECRET_KEY_BASE=long-and-random-alphanumeric-string
+           - GITLAB_SECRETS_OTP_KEY_BASE=long-and-random-alphanumeric-string
+
+           - GITLAB_ROOT_PASSWORD=Password01
+           - GITLAB_ROOT_EMAIL=admin@example.com
+
+           - GITLAB_NOTIFY_ON_BROKEN_BUILDS=true
+           - GITLAB_NOTIFY_PUSHER=false
+
+           - GITLAB_EMAIL=notifications@example.com
+           - GITLAB_EMAIL_REPLY_TO=noreply@example.com
+           - GITLAB_INCOMING_EMAIL_ADDRESS=reply@example.com
+
+           - GITLAB_BACKUP_SCHEDULE=daily
+           - GITLAB_BACKUP_TIME=01:00
+
+          # Amazon Web Services (AWS) Remote Backups
+          #  - AWS_BACKUPS=true
+          #  - AWS_BACKUP_REGION=eu-west-2
+          #  - AWS_BACKUP_BUCKET=
+          #  - AWS_BACKUP_ACCESS_KEY_ID=
+          #  - BACKUP_SECRET_ACCESS_KEY=
+        deploy:
+            labels:
+                - com.df.notify=true
+                - com.df.distribute=true
+                - com.df.servicePath.1=/gitlab
+                - com.df.httpsOnly.1=true
+                - com.df.port.1=80
+                - com.df.srcPort.1=443
+                - com.df.port.2=22
+                - com.df.srcPort.2=10022
+                - com.df.reqMode.2=tcp
+
+    # keycloak:
+    #     image: jboss/keycloak:latest
+    #     hostname: keycloak
+    #     environment:
+    #         - KEYCLOAK_PASSWORD=admin
+    #         - KEYCLOAK_USER=admin
+    #         - PROXY_ADDRESS_FORWARDING=true
+    #     networks:
+    #         - proxy
+    #     deploy:
+    #         labels:
+    #             - com.df.notify=true
+    #             - com.df.distribute=true
+    #             - com.df.servicePath=/
+    #             - com.df.port=8080
+
+networks:
+    gitlab:
+    sonarqube:
+    proxy:
+    attachable:
+      attachable: true
+
+volumes:
+    gitlabPostgresql_data:
+    gitlab_data:
+    jenkins_home:
+      # See 'REX-Ray Docker volume plug-ins' documentaion; volume available across entire docker swarm cluster
+      # https://rexray.readthedocs.io/en/v0.9.0/user-guide/docker-plugins/#elastic-block-service
+      # driver: rexray/ebs
+      # driver_opts:
+      #   size: 5
+    nexus_data:
+    postgresql:
+    postgresql_data:
+    redis_data:
+    sonarqube_bundled_plugins:
+    sonarqube_conf:
+    sonarqube_data:
+    sonarqube_extensions:
+
+secrets:
+    jenkins-pass:
+      file: $PWD/secrets/jenkins/jenkins-pass.txt
+    jenkins-user:
+      file: $PWD/secrets/jenkins/jenkins-user.txt
+    cert-xip.io.pem:
+      # This certificate is local testing
+      file: $PWD/certs/xip.io.pem

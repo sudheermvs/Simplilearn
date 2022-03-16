@@ -1,0 +1,43 @@
+version: "3.7"
+
+volumes:
+  gitlabPostgresql_data:
+    driver: "cloudstor:aws"
+    driver_opts:
+      ebstype: gp2 # https://docs.docker.com/docker-for-aws/persistent-data-volumes/#use-a-unique-volume-per-task-using-ebs && http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSVolumeTypes.html
+      size: 25
+      iops: 1000
+      backing: relocatable
+  gitlab_data:
+    driver: "cloudstor:aws"
+    driver_opts:
+      ebstype: gp2
+      size: 25
+      iops: 1000
+      backing: relocatable
+  jenkins_home:
+    driver: "cloudstor:aws"
+    driver_opts:
+      ebstype: gp2
+      size: 25
+      iops: 1000
+      backing: relocatable
+  nexus_data:
+    driver: "cloudstor:aws"
+    driver_opts:
+      ebstype: gp2
+      size: 25
+      iops: 1000
+      backing: relocatable
+  postgresql:
+  postgresql_data:
+  redis_data:
+  sonarqube_bundled_plugins:
+  sonarqube_conf:
+  sonarqube_data:
+  sonarqube_extensions:
+
+secrets:
+    cert-xip.io.pem:
+      # This certificate is for testing in AWS London region
+      file: $PWD/certs/ci.pem
